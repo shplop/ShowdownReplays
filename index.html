@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Showdown Replay Scraper</title>
+<style>
+:root{--bg:#fafafa;--fg:#1c1c1e;--mut:#6b6b70;--card:#fff;--bd:#d9d9de;--acc:#3b5bdb;--dir:#c92a2a;--pas:#7048e8;--ok:#2b8a3e}
+@media(prefers-color-scheme:dark){:root{--bg:#16161a;--fg:#ececf0;--mut:#9a9aa3;--card:#1f1f25;--bd:#33333c;--acc:#7c93ff;--dir:#ff8787;--pas:#b197fc;--ok:#69db7c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:900px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:24px 0 8px}
+.sub{color:var(--mut);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:14px}
+label{display:block;font-weight:600;margin:0 0 6px}
+input[type=text],textarea{width:100%;padding:8px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit}
+textarea{min-height:90px;font:12px/1.4 ui-monospace,Menlo,monospace}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.row input[type=text]{flex:1;min-width:220px}
+button{padding:8px 14px;border:0;border-radius:6px;background:var(--acc);color:#fff;font:inherit;font-weight:600;cursor:pointer}
+button.alt{background:transparent;color:var(--acc);border:1px solid var(--acc)}
+.note{color:var(--mut);font-size:13px;margin:6px 0 0}.err{color:var(--dir);margin-top:8px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--bd);vertical-align:top}
+th{color:var(--mut);font-weight:600;font-size:12px;text-transform:uppercase}
+td.n{text-align:center;font-variant-numeric:tabular-nums}
+.tbl{overflow-x:auto}.win{color:var(--ok);font-weight:700}
+.d{color:var(--dir);font-weight:600}.p{color:var(--pas);font-weight:600}.dim{color:var(--mut)}
+ul{margin:0;padding-left:18px}
+</style>
+</head>
+<body>
+<main>
+<h1>Showdown Replay Scraper</h1>
+<p class="sub">Get players, teams, winner, and direct/passive KOs from a Pokemon Showdown replay.</p>
+
+<div class="card">
+  <label for="url">Replay URL</label>
+  <div class="row"><input type="text" id="url" placeholder="https://replay.pokemonshowdown.com/..."><button id="go">Fetch</button></div>
+  <p class="note">Some replay sites block requests from other websites. If fetching fails, use one of the options below.</p>
+  <label for="log" style="margin-top:14px">Or paste the replay log / .json / saved page source</label>
+  <textarea id="log" placeholder="|player|p1|..."></textarea>
+  <div class="row" style="margin-top:8px"><button id="parse">Parse pasted log</button>
+  <input type="file" id="file" accept=".log,.json,.html,.txt"></div>
+  <p class="note">Tip: add <b>.log</b> to the end of a replay URL in your browser, then copy the text that appears.</p>
+  <div id="err" class="err"></div>
+</div>
+<div id="out"></div>
+</main>
+
+<script>
+const toId=s=>(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+const SELF_KO_CLASSIFICATION='passive'; // or 'direct'
+const SELF_KO=new Set(['explosion','selfdestruct','mistyexplosion','memento','healingwish','lunardance','finalgambit']);
+const SELF_CAUSES=new Set(['recoil','lifeorb','stickybarb','blacksludge','mindblown','steelbeam','chloroblast','struggle','highjumpkick','jumpkick','supercellslam','axekick']);
+const HAZARDS=new Set(['stealthrock','spikes','gmaxsteelsurge','toxicspikes','stickyweb']);
+const PERSIST=new Set(['psn','brn','par','slp','frz']);
+const FUTURE=new Set(['futuresight','doomdesire']);
+const PRETTY={psn:'poison',brn:'burn',tox:'poison'};
+const clean=s=>(s||'').trim().replace(/^(item|ability|move):\s*/i,'');
+const splitIdent=i=>{const m=/^(p\d)([a-z]?)(?::\s*(.*))?$/.exec((i||'').trim());return m?[m[1],m[2],m[3]||null]:[null,'',null]};
+const tagsOf=parts=>{const t={};for(const p of parts){const m=/^\[(\w+)\]\s*(.*)$/.exec(p);if(m)t[m[1]]=m[2].trim()}return t};
+const base=n=>(n||'').replace('-*','').split('-')[0].toLowerCase();
+const exact=(a,b)=>toId((a||'').replace('-*',''))===toId((b||'').replace('-*',''));
+const newMon=(side,sp,nick)=>({side,species:sp,roster:sp,nick:nick||null,preview:false,appeared:false,formes:[sp],direct:0,passive:0,kills:[],ff:[],src:{},perish0:false,death:null});
+const label=m=>m.nick&&toId(m.nick)!==toId(m.species)?`${m.species} (${m.nick})`:m.species;
+
+function parseLog(log){
+  const players={},mons={},active={},hazards=new Map(),future={},pending=new Map(),events=[];
+  let turn=0,tier=null,winner=null,tie=false,endReason=null,lastMove=null,destiny=null,wSetter=null,futureCtx=null;
+  const list=s=>mons[s]||(mons[s]=[]);
+
+  function findOrCreate(side,nick,sp){
+    const L=list(side);
+    if(nick){const m=L.find(x=>x.nick===nick);if(m)return m}
+    let m=L.find(x=>x.nick==null&&exact(x.roster,sp))||L.find(x=>x.nick==null&&base(x.roster)===base(sp));
+    if(m){m.nick=nick;return m}
+    m=newMon(side,sp,nick);L.push(m);return m;
+  }
+  function resolve(ident){
+    const [s,pos,nick]=splitIdent(ident);if(!s)return null;
+    if(nick){const m=list(s).find(x=>x.nick===nick);if(m)return m}
+    return active[s+pos]||null;
+  }
+  function classify(v,tags){
+    if(tags.from===undefined){
+      if(futureCtx){const [u,mv]=futureCtx;futureCtx=null;return{type:'direct',cause:mv,via:null,killer:u}}
+      if(lastMove)return{type:'direct',cause:lastMove.move,via:lastMove.via,killer:lastMove.user};
+      return{type:'direct',cause:'unknown move',via:null,killer:null};
+    }
+    const cause=clean(tags.from),cid=toId(cause);let k=null;
+    const ofm=tags.of?resolve(tags.of):null;
+    if(SELF_CAUSES.has(cid))k=null;
+    else if(ofm)k=ofm;
+    else if(cid in v.src)k=v.src[cid];
+    else if(['sandstorm','hail','snow','snowscape'].includes(cid))k=wSetter;
+    else if(HAZARDS.has(cid))k=hazards.get(v.side+'|'+cid)||null;
+    if(k===v)k=null;
+    return{type:'passive',cause:PRETTY[cid]||cause,via:null,killer:k};
+  }
+  function faint(mon){
+    let info=pending.get(mon);pending.delete(mon);
+    if(!info){
+      if(destiny&&destiny.side!==mon.side){info={type:'passive',cause:'Destiny Bond',via:null,killer:destiny};destiny=null}
+      else if(mon.perish0){const k=mon.src.perish||null;info={type:'passive',cause:'Perish Song',via:null,killer:k===mon?null:k}}
+      else if(lastMove&&lastMove.user===mon&&SELF_KO.has(toId(lastMove.move)))info={type:SELF_KO_CLASSIFICATION,cause:lastMove.move+' (self-KO)',via:lastMove.via,killer:null};
+      else info={type:'passive',cause:'unknown',via:null,killer:null};
+    }
+    const k=info.killer,ff=!!(k&&k!==mon&&k.side===mon.side),cred=!!(k&&k!==mon&&!ff);
+    mon.death={turn,type:info.type,cause:info.cause,via:info.via,killer:k?label(k):null,friendly_fire:ff};
+    events.push({turn,victim:label(mon),side:mon.side,type:info.type,cause:info.cause,via:info.via,killer:k?label(k):null});
+    if(cred){info.type==='direct'?k.direct++:k.passive++;k.kills.push({turn,victim:label(mon)})}
+    else if(ff)k.ff.push({turn,victim:label(mon)});
+  }
+
+  for(const raw of log.split('\n')){
+    if(raw[0]!=='|')continue;
+    const p=raw.replace(/\r$/,'').slice(1).split('|'),cmd=p[0],tags=tagsOf(p.slice(1));
+    switch(cmd){
+      case 'player':if(p[2])players[p[1]]={name:p[2],rating:p[4]||null};break;
+      case 'tier':tier=p[1];break;
+      case 'poke':{const m=newMon(p[1],p[2].split(',')[0].trim(),null);m.preview=true;list(p[1]).push(m);break}
+      case 'switch':case 'drag':case 'replace':{
+        const [s,pos,nick]=splitIdent(p[1]),sp=p[2].split(',')[0].trim(),m=findOrCreate(s,nick,sp);
+        m.species=sp;m.appeared=true;if(!m.formes.includes(sp))m.formes.push(sp);
+        if(cmd!=='replace'){for(const k of Object.keys(m.src))if(!PERSIST.has(k))delete m.src[k];m.perish0=false;lastMove=null}
+        active[s+pos]=m;break}
+      case 'detailschange':{const m=resolve(p[1]);if(m){m.species=p[2].split(',')[0].trim();if(!m.formes.includes(m.species))m.formes.push(m.species)}break}
+      case 'turn':turn=+p[1];lastMove=null;destiny=null;break;
+      case 'upkeep':lastMove=null;destiny=null;break;
+      case 'move':{
+        const user=resolve(p[1]);let via=tags.from?clean(tags.from):null;
+        if(via&&['lockedmove','pursuit'].includes(toId(via)))via=null;
+        lastMove={user,move:p[2],via};
+        if(user&&FUTURE.has(toId(p[2]))&&p.length>3){const [ts,tp]=splitIdent(p[3]);if(ts)future[ts+tp]=[user,p[2]]}
+        break}
+      case '-damage':{const v=resolve(p[1]);if(!v)break;const info=classify(v,tags);if((p[2]||'').includes('fnt'))pending.set(v,info);break}
+      case '-end':{
+        const eff=toId(clean(p[2]));
+        if(FUTURE.has(eff)){const [s,pos]=splitIdent(p[1]);const src=s?future[s+pos]:null;if(src){delete future[s+pos];futureCtx=src}}
+        else{const m=resolve(p[1]);if(m)delete m.src[eff]}
+        break}
+      case '-status':{
+        const m=resolve(p[1]);if(!m)break;
+        const sid=(p[2]==='psn'||p[2]==='tox')?'psn':p[2],ofm=tags.of?resolve(tags.of):null;let src=null;
+        if(ofm)src=ofm;
+        else if((tags.from||'').toLowerCase().startsWith('item:'))src=null;
+        else if(lastMove&&lastMove.user)src=lastMove.user;
+        else if(sid==='psn')src=hazards.get(m.side+'|toxicspikes')||null;
+        m.src[sid]=src===m?null:src;break}
+      case '-curestatus':{const m=resolve(p[1]);if(m&&p[2])delete m.src[(p[2]==='tox')?'psn':p[2]];break}
+      case '-start':{
+        const m=resolve(p[1]);if(!m||p.length<3)break;
+        const eid=toId(clean(p[2])),src=tags.of?resolve(tags.of):(lastMove?lastMove.user:null);
+        if(/^perish\d$/.test(eid)){if(eid==='perish3'&&src)m.src.perish=src;else if(eid==='perish0')m.perish0=true}
+        else m.src[eid]=src;
+        break}
+      case '-activate':{
+        if(p.length<3)break;
+        const eff=toId(clean(p[2])),m=resolve(p[1]);
+        if(eff==='destinybond')destiny=m;
+        else if(m&&tags.of&&/^move:/i.test(p[2])){const o=resolve(tags.of);if(o)m.src[eff]=o}
+        break}
+      case '-sidestart':hazards.set(splitIdent(p[1])[0]+'|'+toId(clean(p[2])),lastMove?lastMove.user:null);break;
+      case '-sideend':hazards.delete(splitIdent(p[1])[0]+'|'+toId(clean(p[2])));break;
+      case '-weather':
+        if(p[1].toLowerCase()==='none')wSetter=null;
+        else if(!('upkeep' in tags)){const o=tags.of?resolve(tags.of):null;wSetter=o||(lastMove?lastMove.user:null)}
+        break;
+      case 'faint':{const m=resolve(p[1]);if(m)faint(m);break}
+      case 'win':winner=p[1];break;
+      case 'tie':tie=true;break;
+      case '-message':if(/forfeited|inactivity/i.test(p[1]||''))endReason=p[1];break;
+    }
+  }
+  const wside=Object.keys(players).find(s=>players[s].name===winner)||null;
+  return{tier,players,winner,wside,tie,endReason,turn,events,
+    teams:Object.keys(mons).sort().map(s=>({side:s,mons:mons[s]}))};
+}
+
+/* ---------- input handling ---------- */
+function logFromText(t){
+  const s=t.trim();
+  if(s[0]==='{'){try{return JSON.parse(s).log}catch(e){}}
+  const m=/<script[^>]*type="text\/plain"[^>]*class="(?:battle-)?log(?:-data)?"[^>]*>([\s\S]*?)<\/script>/.exec(t);
+  if(m){const d=document.createElement('textarea');d.innerHTML=m[1];return d.value}
+  return t;
+}
+async function fetchLog(url){
+  const b=url.split('#')[0].split('?')[0].replace(/\/$/,'').replace(/\.(json|log)$/,'');
+  for(const suf of ['.json','.log']){
+    try{const r=await fetch(b+suf);if(!r.ok)continue;const l=logFromText(await r.text());if(l.includes('|player|')||l.includes('|switch|'))return l}catch(e){}
+  }
+  throw new Error('Could not download the log (the site may block other websites from fetching it). Open the replay, add .log to the URL, copy the text, and paste it below.');
+}
+
+/* ---------- rendering ---------- */
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function deathHtml(d){
+  if(!d)return '<span class="dim">Survived</span>';
+  let s=`T${d.turn} <span class="${d.type==='direct'?'d':'p'}">${d.type.toUpperCase()}</span>: ${esc(d.cause)}`;
+  if(d.via)s+=` <span class="dim">(via ${esc(d.via)})</span>`;
+  s+=d.killer?` <span class="dim">| credit: ${esc(d.killer)}${d.friendly_fire?' [friendly fire, not counted]':''}</span>`:' <span class="dim">| no credit</span>';
+  return s;
+}
+let last=null;
+function render(r){
+  last=r;
+  const pn=s=>{const p=r.players[s];return p?esc(p.name)+(p.rating?` (${esc(p.rating)})`:''):s};
+  let h=`<div class="card"><b>Players:</b> ${pn('p1')} vs ${pn('p2')}<br>`;
+  h+=r.tie?'<b>Result:</b> Tie':r.winner?`<b>Winner:</b> <span class="win">${esc(r.winner)}</span>`:'<b>Winner:</b> not found (replay may be incomplete)';
+  if(r.endReason)h+=`<br><b>Ended:</b> ${esc(r.endReason)}`;
+  h+=`<br><b>Format:</b> ${esc(r.tier||'unknown')} &middot; <b>Turns:</b> ${r.turn}</div>`;
+  for(const t of r.teams){
+    const nm=r.players[t.side]?esc(r.players[t.side].name):t.side;
+    const td=t.mons.reduce((a,m)=>a+m.direct,0),tp=t.mons.reduce((a,m)=>a+m.passive,0);
+    h+=`<h2>${nm} <span class="dim">[${t.side}]</span></h2><div class="card tbl"><table><tr><th>Pokemon</th><th>Played</th><th>Direct</th><th>Passive</th><th>Result</th></tr>`;
+    for(const m of t.mons)h+=`<tr><td>${esc(label(m))}</td><td>${m.appeared?'yes':'no'}</td><td class="n">${m.direct}</td><td class="n">${m.passive}</td><td>${deathHtml(m.death)}</td></tr>`;
+    h+=`</table><p class="note">Team totals: ${td} direct, ${tp} passive, ${td+tp} total KOs</p></div>`;
+  }
+  if(r.events.length){
+    h+='<h2>Faint log</h2><div class="card"><ul>';
+    for(const e of r.events){const o=r.players[e.side]?esc(r.players[e.side].name):e.side;
+      h+=`<li>T${e.turn} ${esc(e.victim)} (${o}): <span class="${e.type==='direct'?'d':'p'}">${e.type.toUpperCase()}</span> - ${esc(e.cause)}${e.via?` (via ${esc(e.via)})`:''}${e.killer?`, credit ${esc(e.killer)}`:''}</li>`}
+    h+='</ul></div>';
+  }
+  h+='<button class="alt" id="csv">Download CSV</button>';
+  document.getElementById('out').innerHTML=h;
+  document.getElementById('csv').onclick=downloadCsv;
+}
+function downloadCsv(){
+  const q=v=>`"${String(v??'').replace(/"/g,'""')}"`;
+  const rows=[['player','side','pokemon','nickname','appeared','direct_kills','passive_kills','fainted','death_turn','death_type','death_cause','credited_to','won']];
+  for(const t of last.teams)for(const m of t.mons){const d=m.death||{};
+    rows.push([(last.players[t.side]||{}).name||t.side,t.side,m.species,m.nick&&toId(m.nick)!==toId(m.species)?m.nick:'',m.appeared,m.direct,m.passive,!!m.death,d.turn||'',d.type||'',d.cause||'',d.killer||'',last.wside===t.side])}
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([rows.map(r=>r.map(q).join(',')).join('\n')],{type:'text/csv'}));
+  a.download='replay_results.csv';a.click();
+}
+function run(log){
+  const err=document.getElementById('err');err.textContent='';
+  try{
+    if(!/\|(player|switch)\|/.test(log))throw new Error('That does not look like a Showdown battle log.');
+    render(parseLog(log));
+  }catch(e){err.textContent=e.message}
+}
+document.getElementById('go').onclick=async()=>{
+  const err=document.getElementById('err');err.textContent='';
+  const u=document.getElementById('url').value.trim();if(!u)return;
+  try{const l=await fetchLog(u);document.getElementById('log').value=l;run(l)}catch(e){err.textContent=e.message}
+};
+document.getElementById('parse').onclick=()=>run(logFromText(document.getElementById('log').value));
+document.getElementById('file').onchange=async e=>{
+  const f=e.target.files[0];if(!f)return;
+  const l=logFromText(await f.text());document.getElementById('log').value=l;run(l);
+};
+</script>
+</body>
+</html>
