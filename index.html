@@ -57,7 +57,7 @@ ul{margin:0;padding-left:18px}
 
 <script>
 // Optional: paste your deployed Cloudflare Worker URL here (see worker.js), e.g. 'https://replay-proxy.yourname.workers.dev'
-const PROXY_URL='https://replay-proxy.rmcmanus1228.workers.dev';
+const PROXY_URL='';
 const toId=s=>(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
 const SELF_KO_CLASSIFICATION='passive'; // or 'direct'
 const SELF_KO=new Set(['explosion','selfdestruct','mistyexplosion','memento','healingwish','lunardance','finalgambit']);
@@ -190,17 +190,18 @@ function parseLog(log){
 /* ---------- input handling ---------- */
 function logFromText(t){
   const s=t.trim();
-  if(s[0]==='{'){try{return JSON.parse(s).log}catch(e){}}
-  const m=/<script[^>]*type="text\/plain"[^>]*class="(?:battle-)?log(?:-data)?"[^>]*>([\s\S]*?)<\/script>/.exec(t);
-  if(m){const d=document.createElement('textarea');d.innerHTML=m[1];return d.value}
+  if(s[0]==='{'){try{const j=JSON.parse(s).log;if(j)return j}catch(e){}}
+  const re=/<script[^>]*type="text\/plain"[^>]*>([\s\S]*?)<\/script>/g;let m;
+  while((m=re.exec(t))){const d=document.createElement('textarea');d.innerHTML=m[1];if(d.value.includes('|player|'))return d.value}
   return t;
 }
 async function fetchLog(url){
   const b=url.split('#')[0].split('?')[0].replace(/\/$/,'').replace(/\.(json|log)$/,'');
   const tries=[];
-  for(const suf of ['.json','.log']){
-    tries.push({name:'direct '+suf,url:b+suf});
-    if(PROXY_URL)tries.push({name:'proxy '+suf,url:PROXY_URL.replace(/\/+$/,'')+'/?url='+encodeURIComponent(b+suf)});
+  for(const suf of ['.json','.log','']){
+    const nm=suf||'page';
+    tries.push({name:'direct '+nm,url:b+suf});
+    if(PROXY_URL)tries.push({name:'proxy '+nm,url:PROXY_URL.replace(/\/+$/,'')+'/?url='+encodeURIComponent(b+suf)});
   }
   const errs=[];
   for(const t of tries){
@@ -212,7 +213,9 @@ async function fetchLog(url){
       errs.push(`${t.name}: response was not a battle log`);
     }catch(e){errs.push(`${t.name}: blocked or unreachable`)}
   }
-  throw new Error('Could not download the log. '+(PROXY_URL?'':'No proxy is set in this page (PROXY_URL is empty). ')+'Attempts: '+errs.join('; ')+'. You can still open the replay, add .log to the URL, copy the text, and paste it below.');
+  const fe=new Error('Could not fetch this replay automatically. '+(PROXY_URL?'':'(No proxy is set in this page.) ')+'Details: '+errs.join('; ')+'.');
+  fe.logUrl=b+'.log';
+  throw fe;
 }
 
 /* ---------- rendering ---------- */
@@ -268,7 +271,12 @@ function run(log){
 document.getElementById('go').onclick=async()=>{
   const err=document.getElementById('err');err.textContent='';
   const u=document.getElementById('url').value.trim();if(!u)return;
-  try{const l=await fetchLog(u);document.getElementById('log').value=l;run(l)}catch(e){err.textContent=e.message}
+  try{const l=await fetchLog(u);document.getElementById('log').value=l;run(l)}catch(e){
+    err.textContent=e.message;
+    if(e.logUrl){const a=document.createElement('a');a.href=e.logUrl;a.target='_blank';a.rel='noopener';
+      a.textContent='Click here to open the log, select all (Ctrl+A), copy it, and paste it into the box below.';
+      err.appendChild(document.createElement('br'));err.appendChild(a)}
+  }
 };
 /* ---------- bookmarklet: runs on the replay page itself ---------- */
 function bookmarklet(TOOL){
