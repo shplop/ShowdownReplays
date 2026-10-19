@@ -50,7 +50,7 @@ ul{margin:0;padding-left:18px}
 
 <script>
 // Optional: paste your deployed Cloudflare Worker URL here (see worker.js), e.g. 'https://replay-proxy.yourname.workers.dev'
-const PROXY_URL='https://replay-proxy.rmcmanus1228.workers.dev';
+const PROXY_URL='';
 const toId=s=>(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
 const SELF_KO_CLASSIFICATION='passive'; // or 'direct'
 const SELF_KO=new Set(['explosion','selfdestruct','mistyexplosion','memento','healingwish','lunardance','finalgambit']);
@@ -220,6 +220,26 @@ function deathHtml(d){
   s+=d.killer?` <span class="dim">| credit: ${esc(d.killer)}${d.friendly_fire?' [friendly fire, not counted]':''}</span>`:' <span class="dim">| no credit</span>';
   return s;
 }
+/* ---------- Google Sheets export ---------- */
+const SHEET_ROWS=6;
+const KEEP_HYPHEN=/^(chi-yu|wo-chien|ting-lu|chien-pao|ho-oh|porygon-z|jangmo-o|hakamo-o|kommo-o)/i;
+const REGION={galar:'Galarian',alola:'Alolan',hisui:'Hisuian',paldea:'Paldean'};
+function sheetName(m,strip){
+  let n=(m.formes.find(f=>!f.includes('*'))||m.roster).replace(/-\*$/,'').replace(/-[FM]$/,'');
+  const r=/^(.+?)-(Galar|Alola|Hisui|Paldea)(?:-.+)?$/.exec(n);
+  if(r)return REGION[r[2].toLowerCase()]+' '+r[1];
+  if(strip){const k=KEEP_HYPHEN.exec(n);return k?k[0]:n.split('-')[0]}
+  return n;
+}
+function sheetTsv(team,strip){
+  const rows=team.mons.map(m=>[sheetName(m,strip),m.direct,m.passive,m.death?(m.death.type==='direct'?'Direct':'Passive'):'']);
+  while(rows.length<SHEET_ROWS)rows.push(['','','','']);
+  return rows.map(r=>r.join('\t')).join('\n');
+}
+async function copyText(t,btn){
+  try{await navigator.clipboard.writeText(t)}catch(e){const a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();document.execCommand('copy');a.remove()}
+  const o=btn.textContent;btn.textContent='Copied!';setTimeout(()=>btn.textContent=o,1500);
+}
 let last=null;
 function render(r){
   last=r;
@@ -228,12 +248,13 @@ function render(r){
   h+=r.tie?'<b>Result:</b> Tie':r.winner?`<b>Winner:</b> <span class="win">${esc(r.winner)}</span>`:'<b>Winner:</b> not found (replay may be incomplete)';
   if(r.endReason)h+=`<br><b>Ended:</b> ${esc(r.endReason)}`;
   h+=`<br><b>Format:</b> ${esc(r.tier||'unknown')} &middot; <b>Turns:</b> ${r.turn}</div>`;
+  h+='<label style="display:block;font-weight:400;font-size:13px"><input type="checkbox" id="strip"> Strip form names when copying for Sheets (Ogerpon-Wellspring becomes Ogerpon)</label>';
   for(const t of r.teams){
     const nm=r.players[t.side]?esc(r.players[t.side].name):t.side;
     const td=t.mons.reduce((a,m)=>a+m.direct,0),tp=t.mons.reduce((a,m)=>a+m.passive,0);
     h+=`<h2>${nm} <span class="dim">[${t.side}]</span></h2><div class="card tbl"><table><tr><th>Pokemon</th><th>Played</th><th>Direct</th><th>Passive</th><th>Result</th></tr>`;
     for(const m of t.mons)h+=`<tr><td>${esc(label(m))}</td><td>${m.appeared?'yes':'no'}</td><td class="n">${m.direct}</td><td class="n">${m.passive}</td><td>${deathHtml(m.death)}</td></tr>`;
-    h+=`</table><p class="note">Team totals: ${td} direct, ${tp} passive, ${td+tp} total KOs</p></div>`;
+    h+=`</table><p class="note">Team totals: ${td} direct, ${tp} passive, ${td+tp} total KOs</p><button class="alt" data-copy="${t.side}">Copy for Google Sheets</button></div>`;
   }
   if(r.events.length){
     h+='<h2>Faint log</h2><div class="card"><ul>';
@@ -243,6 +264,10 @@ function render(r){
   }
   h+='<button class="alt" id="csv">Download CSV</button>';
   document.getElementById('out').innerHTML=h;
+  document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{
+    const t=last.teams.find(x=>x.side===b.dataset.copy);
+    copyText(sheetTsv(t,document.getElementById('strip').checked),b);
+  });
   document.getElementById('csv').onclick=downloadCsv;
 }
 function downloadCsv(){
