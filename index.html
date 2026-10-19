@@ -27,7 +27,6 @@ td.n{text-align:center;font-variant-numeric:tabular-nums}
 .tbl{overflow-x:auto}.win{color:var(--ok);font-weight:700}
 .d{color:var(--dir);font-weight:600}.p{color:var(--pas);font-weight:600}.dim{color:var(--mut)}
 ul{margin:0;padding-left:18px}
-.bmbtn{display:inline-block;padding:8px 14px;border-radius:6px;background:var(--acc);color:#fff;font-weight:600;text-decoration:none;cursor:grab}
 </style>
 </head>
 <body>
@@ -46,18 +45,12 @@ ul{margin:0;padding-left:18px}
   <p class="note">Tip: add <b>.log</b> to the end of a replay URL in your browser, then copy the text that appears.</p>
   <div id="err" class="err"></div>
 </div>
-<div class="card">
-  <label>Replays from private servers</label>
-  <p class="note" style="margin:0 0 10px">Some servers block automated fetching. Drag this button to your bookmarks bar. Then open any replay and click the bookmark to send it here.</p>
-  <a id="bm" class="bmbtn" href="#">Send replay to scraper</a>
-  <p class="note">Desktop browsers only. If the new tab doesn't fill in by itself, the log is on your clipboard: paste it into the box above and click Parse.</p>
-</div>
 <div id="out"></div>
 </main>
 
 <script>
 // Optional: paste your deployed Cloudflare Worker URL here (see worker.js), e.g. 'https://replay-proxy.yourname.workers.dev'
-const PROXY_URL='https://replay-proxy.rmcmanus1228.workers.dev';
+const PROXY_URL='';
 const toId=s=>(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
 const SELF_KO_CLASSIFICATION='passive'; // or 'direct'
 const SELF_KO=new Set(['explosion','selfdestruct','mistyexplosion','memento','healingwish','lunardance','finalgambit']);
@@ -278,33 +271,6 @@ document.getElementById('go').onclick=async()=>{
       err.appendChild(document.createElement('br'));err.appendChild(a)}
   }
 };
-/* ---------- bookmarklet: runs on the replay page itself ---------- */
-function bookmarklet(TOOL){
-  const w=window.open(TOOL),o=new URL(TOOL).origin;
-  (async()=>{
-    const ok=t=>typeof t==='string'&&t.indexOf('|player|')>-1;
-    let log='';
-    const s=document.querySelector('script.log,script.battle-log-data,script[type="text/plain"]');
-    if(s)log=s.textContent;
-    if(!ok(log)){
-      const b=location.origin+location.pathname.replace(/\.(json|log)$/,'');
-      try{log=(await(await fetch(b+'.json')).json()).log}catch(e){}
-      if(!ok(log)){try{log=await(await fetch(b+'.log')).text()}catch(e){}}
-    }
-    if(!ok(log)){alert('No Showdown battle log found on this page.');if(w)w.close();return}
-    try{await navigator.clipboard.writeText(log)}catch(e){}
-    const h=e=>{if(e.source===w&&e.origin===o&&e.data&&e.data.type==='replay-tool-ready'){w.postMessage({type:'replay-log',log:log},o);removeEventListener('message',h)}};
-    addEventListener('message',h);
-  })();
-}
-const bm=document.getElementById('bm');
-bm.href='javascript:'+encodeURIComponent('('+bookmarklet.toString()+')('+JSON.stringify(location.href.split('#')[0].split('?')[0])+')');
-bm.onclick=e=>{e.preventDefault();alert('Drag this button up to your bookmarks bar instead of clicking it.')};
-window.addEventListener('message',e=>{
-  const d=e.data;
-  if(d&&d.type==='replay-log'&&typeof d.log==='string'){document.getElementById('log').value=d.log;run(d.log)}
-});
-if(window.opener){try{window.opener.postMessage({type:'replay-tool-ready'},'*')}catch(e){}}
 document.getElementById('parse').onclick=()=>run(logFromText(document.getElementById('log').value));
 document.getElementById('file').onchange=async e=>{
   const f=e.target.files[0];if(!f)return;
