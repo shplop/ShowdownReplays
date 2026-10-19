@@ -49,6 +49,8 @@ ul{margin:0;padding-left:18px}
 </main>
 
 <script>
+// Optional: paste your deployed Cloudflare Worker URL here (see worker.js), e.g. 'https://replay-proxy.yourname.workers.dev'
+const PROXY_URL='';
 const toId=s=>(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
 const SELF_KO_CLASSIFICATION='passive'; // or 'direct'
 const SELF_KO=new Set(['explosion','selfdestruct','mistyexplosion','memento','healingwish','lunardance','finalgambit']);
@@ -188,8 +190,10 @@ function logFromText(t){
 }
 async function fetchLog(url){
   const b=url.split('#')[0].split('?')[0].replace(/\/$/,'').replace(/\.(json|log)$/,'');
-  for(const suf of ['.json','.log']){
-    try{const r=await fetch(b+suf);if(!r.ok)continue;const l=logFromText(await r.text());if(l.includes('|player|')||l.includes('|switch|'))return l}catch(e){}
+  const tries=[];
+  for(const suf of ['.json','.log']){tries.push(b+suf);if(PROXY_URL)tries.push(PROXY_URL+'?url='+encodeURIComponent(b+suf))}
+  for(const u of tries){
+    try{const r=await fetch(u);if(!r.ok)continue;const l=logFromText(await r.text());if(l.includes('|player|')||l.includes('|switch|'))return l}catch(e){}
   }
   throw new Error('Could not download the log (the site may block other websites from fetching it). Open the replay, add .log to the URL, copy the text, and paste it below.');
 }
